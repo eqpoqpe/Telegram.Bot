@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Telegram.Bot.Types;
@@ -57,6 +58,11 @@ public static class Markdown
                             closing.md = $"](tg://user?id={nextEntity.User?.Id})";
                         else if (nextEntity.Type is MessageEntityType.CustomEmoji)
                             closing.md = $"](tg://emoji?id={nextEntity.CustomEmojiId})";
+                        else if (nextEntity.Type is MessageEntityType.DateTime)
+                        {
+                            closing.md = string.IsNullOrEmpty(nextEntity.DateTimeFormat) ? "" : $"&format={nextEntity.DateTimeFormat}";
+                            closing.md = $"](tg://time?unix={((DateTimeOffset)nextEntity.UnixTime!).ToUnixTimeSeconds()}{closing.md})";
+                        }
                     }
                     else if (md[0] == '>')
                     { inBlockQuote = true; md = lastCh is not '\n' and not '\0' ? "\n>" : ">"; }
@@ -96,6 +102,7 @@ public static class Markdown
         [MessageEntityType.CustomEmoji] = "![",
         [MessageEntityType.Blockquote] = ">",
         [MessageEntityType.ExpandableBlockquote] = ">||",
+        [MessageEntityType.DateTime] = "![",
     };
 
     /// <summary>Insert backslashes in front of MarkdownV2 reserved characters</summary>
@@ -174,6 +181,11 @@ public static class HtmlText
                     }
                     else if (nextEntity.Type is MessageEntityType.ExpandableBlockquote)
                         tag = "<blockquote expandable>";
+                    else if (nextEntity.Type is MessageEntityType.DateTime)
+                    {
+                        tag = string.IsNullOrEmpty(nextEntity.DateTimeFormat) ? null : $" format=\"{nextEntity.DateTimeFormat}\"";
+                        tag = $"<tg-time unix=\"{((DateTimeOffset)nextEntity.UnixTime!).ToUnixTimeSeconds()}\"{tag}>";
+                    }
                     else
                         tag = $"<{tag}>";
                     int index = ~closings.BinarySearch(closing, Comparer<(int, string)>.Create((x, y) => x.Item1.CompareTo(y.Item1) | 1));
@@ -206,6 +218,7 @@ public static class HtmlText
         [MessageEntityType.CustomEmoji] = "tg-emoji",
         [MessageEntityType.Blockquote] = "blockquote",
         [MessageEntityType.ExpandableBlockquote] = "blockquote",
+        [MessageEntityType.DateTime] = "tg-time",
     };
 
     /// <summary>Replace special HTML characters with their &amp;xx; equivalent</summary>
@@ -328,7 +341,7 @@ public static class HtmlText
         List<IAlbumInputMedia>? media = null;
         bool captionAbove = false;
         InputMedia? im = null;
-        while (true)
+        while (!span.IsEmpty)
         {
             int iImg = span.IndexOf("<img ", StringComparison.OrdinalIgnoreCase);
             int iVid = span.IndexOf("<video ", StringComparison.OrdinalIgnoreCase);
@@ -338,11 +351,14 @@ public static class HtmlText
             //var index = span.IndexOfAny(SpecialHtmlTags);
             if (index < 0)
             {
-                if (im is { Caption: null })
-                {
-                    im.Caption = Truncate(span.ToString(), 1024);
-                    im.ParseMode = ParseMode.Html;
-                }
+                if (im is not null)
+                    if (im.Caption == null)
+                    {
+                        im.Caption = Truncate(span.ToString(), 1024);
+                        im.ParseMode = ParseMode.Html;
+                    }
+                    else
+                        im.Caption = Truncate($"{im.Caption}\n\n{span}", 1024);
                 break;
             }
             var caption = span[..index].Trim();
@@ -572,20 +588,22 @@ public static class HtmlText
             else if (keyboard.StartsWith("</row>", StringComparison.OrdinalIgnoreCase)) { }
             else if (CheckHtmlArg(ref keyboard, "<button text=\"", out var text))
             {
+                IKeyboardButton button;
                 if (inline != null)
                 {
+                    InlineKeyboardButton ikb;
                     if (CheckHtmlArg(ref keyboard, "url=\"", out var url))
-                        inline.AddButton(InlineKeyboardButton.WithUrl(text, url));
+                        inline.AddButton(ikb = InlineKeyboardButton.WithUrl(text, url));
                     else if (CheckHtmlArg(ref keyboard, "callback=\"", out var data))
-                        inline.AddButton(InlineKeyboardButton.WithCallbackData(text, data));
+                        inline.AddButton(ikb = InlineKeyboardButton.WithCallbackData(text, data));
                     else if (CheckHtmlArg(ref keyboard, "app=\"", out var app))
-                        inline.AddButton(InlineKeyboardButton.WithWebApp(text, app));
+                        inline.AddButton(ikb = InlineKeyboardButton.WithWebApp(text, app));
                     else if (CheckHtmlArg(ref keyboard, "copy=\"", out var copy))
-                        inline.AddButton(InlineKeyboardButton.WithCopyText(text, copy));
+                        inline.AddButton(ikb = InlineKeyboardButton.WithCopyText(text, copy));
                     else if (CheckHtmlArg(ref keyboard, "switch_inline=\"", out var query))
                         if (CheckHtmlArg(ref keyboard, "target=\"", out var target))
                             if (Enum.TryParse<SwitchInlineTarget>(target, ignoreCase: true, out var targets))
-                                inline.AddButton(InlineKeyboardButton.WithSwitchInlineQueryChosenChat(text, new()
+                                inline.AddButton(ikb = InlineKeyboardButton.WithSwitchInlineQueryChosenChat(text, new()
                                 {
                                     Query = query,
                                     AllowUserChats = targets.HasFlag(SwitchInlineTarget.User),
@@ -594,27 +612,39 @@ public static class HtmlText
                                     AllowChannelChats = targets.HasFlag(SwitchInlineTarget.Channel),
                                 }));
                             else
-                                inline.AddButton(InlineKeyboardButton.WithSwitchInlineQuery(text, query));
+                                inline.AddButton(ikb = InlineKeyboardButton.WithSwitchInlineQuery(text, query));
                         else
-                            inline.AddButton(InlineKeyboardButton.WithSwitchInlineQueryCurrentChat(text, query));
+                            inline.AddButton(ikb = InlineKeyboardButton.WithSwitchInlineQueryCurrentChat(text, query));
                     else
                         throw new FormatException("Unrecognized inline <button> type");
+                    button = ikb;
                 }
                 else if (reply != null)
                 {
-                    if (keyboard[0] is '>' or '/')
-                        reply.AddButton(text);
-                    else if (CheckHtmlArg(ref keyboard, "request_contact", out _))
-                        reply.AddButton(KeyboardButton.WithRequestContact(text));
+                    KeyboardButton kb;
+                    if (CheckHtmlArg(ref keyboard, "request_contact", out _))
+                        reply.AddButton(kb = KeyboardButton.WithRequestContact(text));
                     else if (CheckHtmlArg(ref keyboard, "request_location", out _))
-                        reply.AddButton(KeyboardButton.WithRequestLocation(text));
+                        reply.AddButton(kb = KeyboardButton.WithRequestLocation(text));
                     else if (CheckHtmlArg(ref keyboard, "request_poll=\"", out var pollType))
-                        reply.AddButton(KeyboardButton.WithRequestPoll(text, pollType is "" or "any" ? (PollType?)null : Enum.Parse<PollType>(pollType, ignoreCase: true)));
+                        reply.AddButton(kb = KeyboardButton.WithRequestPoll(text, pollType is "" or "any" ? (PollType?)null : Enum.Parse<PollType>(pollType, ignoreCase: true)));
                     //TO-DO: support request_users and request_chat?
                     else if (CheckHtmlArg(ref keyboard, "app=\"", out var app))
-                        reply.AddButton(KeyboardButton.WithWebApp(text, app));
+                        reply.AddButton(kb = KeyboardButton.WithWebApp(text, app));
                     else
-                        throw new FormatException("Unrecognized reply <button> type");
+                        reply.AddButton(kb = new KeyboardButton(text));
+                    button = kb;
+                }
+                else
+                    throw new FormatException("Invalid keyboard");
+                while (true)
+                {
+                    if (CheckHtmlArg(ref keyboard, "style=\"", out var style))
+                        button.Style = Enum.Parse<KeyboardButtonStyle>(style, true);
+                    else if (CheckHtmlArg(ref keyboard, "icon=\"", out var emojiId))
+                        button.IconCustomEmojiId = emojiId;
+                    else
+                        break;
                 }
             }
             keyboard = keyboard[(keyboard.IndexOf('>') + 1)..].Trim();
@@ -633,8 +663,58 @@ public static class HtmlText
         kb = kb[(end + 1)..].TrimStart();
         return true;
     }
+
+    /// <summary>Generate HTML text (for use with SendHtml method) from the Message Text or Caption</summary>
+    /// <param name="msg">The message</param>
+    /// <param name="withMedia">Include img/video/file tag with file_id for the message media (if any)</param>
+    /// <param name="withPreview">Include the link preview tag for the message (if any)</param>
+    /// <param name="withKeyboard">Include the tags for the inline keyboard markup (if any)</param>
+    public static string? ToHtml(this Message msg, bool withMedia, bool withPreview = true, bool withKeyboard = false)
+    {
+        var html = msg.ToHtml();
+        if (withMedia)
+        {
+            var media = msg switch
+            {
+                { Photo: { } photo } => $"<img src=\"{photo[^1].FileId}\"{(msg.HasMediaSpoiler ? " spoiler>" : ">")}",
+                { Video: { } video } => $"<video src=\"{video.FileId}\"{(msg.HasMediaSpoiler ? " spoiler>" : ">")}",
+                { Animation: { } animation } => $"<video src=\"{animation.FileId}\"{(msg.HasMediaSpoiler ? " spoiler>" : ">")}",
+                { Document: { } document } => $"<file src=\"{document.FileId}\">",
+                { Sticker: { } sticker } => $"<file src=\"{sticker.FileId}\">",
+                { Audio: { } audio } => $"<file src=\"{audio.FileId}\">",
+                { Voice: { } voice } => $"<file src=\"{voice.FileId}\">",
+                { VideoNote: { } videoNote } => $"<file src=\"{videoNote.FileId}\">",
+                _ => null
+            };
+            if (media != null) html = html == null ? media : msg.ShowCaptionAboveMedia ? $"{html}\n{media}" : $"{media}\n{html}";
+        }
+        if (withPreview && msg.LinkPreviewOptions is { } lpo)
+            if (lpo.IsDisabled)
+                html = $"{html}\n<preview disable>";
+            else
+                html = $"{html}\n<preview url=\"{Escape(lpo.Url)}\"{(lpo.PreferSmallMedia ? " small" : lpo.PreferLargeMedia ? " large" : "")}{(lpo.ShowAboveText ? " above>" : ">")}";
+        if (withKeyboard && msg.ReplyMarkup is { } ikm)
+        {
+            var keyboard = string.Join("\n<row>", ikm.InlineKeyboard.Select(row => string.Concat(row.Select(btn =>
+                $"\n<button text=\"{Escape(btn.Text)}\"{btn switch
+                {
+                    { Url: { } } => $" url=\"{Escape(btn.Url)}\" />",
+                    { CallbackData: { } } => $" callback=\"{Escape(btn.CallbackData)}\" />",
+                    { WebApp: { } } => $" app=\"{Escape(btn.WebApp.Url)}\" />",
+                    { CopyText: { } } => $" copy=\"{Escape(btn.CopyText)}\" />",
+                    { SwitchInlineQuery: { } } => $" switch_inline=\"{Escape(btn.SwitchInlineQuery)}\" target=\"*\" />",
+                    { SwitchInlineQueryCurrentChat: { } } => $" switch_inline=\"{Escape(btn.SwitchInlineQueryCurrentChat)}\" />",
+                    { SwitchInlineQueryChosenChat: { } siqcc } => $" switch_inline=\"{Escape(siqcc.Query)}\" target=\"{string.Join(',', new[]
+                        { (siqcc.AllowUserChats, "user"), (siqcc.AllowBotChats, "bot"), (siqcc.AllowGroupChats, "group"), (siqcc.AllowChannelChats, "channel")
+                        }.Where(t => t.Item1).Select(t => t.Item2))}\" />",
+                    _ => "/>"
+                }}"))));
+            html = $"{html}\n<keyboard>{keyboard}\n</keyboard>";
+        }
+        return html;
+    }
 #else //!NET6_0_OR_GREATER
-    #pragma warning disable MA0028
+#pragma warning disable MA0028
     private static StringBuilder Append(this StringBuilder sb, ReadOnlySpan<char> value) => sb.Append(value.ToString());
     private static StringBuilder Insert(this StringBuilder sb, int index, ReadOnlySpan<char> value) => sb.Insert(index, value.ToString());
 #endif

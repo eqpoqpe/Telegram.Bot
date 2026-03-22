@@ -57,12 +57,12 @@ namespace Telegram.Bot.Types
 
         /// <summary><see langword="true"/> if it's a service message, <see langword="false"/> if it's a content message</summary>
         [JsonIgnore]
-        public bool IsServiceMessage => this switch
+        public bool IsServiceMessage => this switch // see https://github.com/tdlib/td/blob/master/td/telegram/MessageContentType.cpp#L506
         {
             { Text: { } } or { Caption: { } } or { Photo: { } } or { Video: { } } or { Document: { } } or { Sticker: { } } or
             { Animation: { } } or { Audio: { } } or { Voice: { } } or { Poll: { } } or { Dice: { } } or { Checklist: { } } or
             { Game: { } } or { Location: { } } or { PaidMedia: { } } or { Story: { } } or { VideoNote: { } } or { Contact: { } } or
-            { Venue: { } } or { Invoice: { } } or { Giveaway: { } } or { GiveawayWinners: { } } or { Gift: { } } or { UniqueGift: { } }
+            { Venue: { } } or { Invoice: { } } or { Giveaway: { } } or { GiveawayWinners: { } }
               => false,
             _ => true
         };
@@ -127,7 +127,8 @@ namespace Telegram.Bot.Types
         {
             CanSendMessages = CanSendAudios = CanSendDocuments = CanSendPhotos = defaultValue;
             CanSendVideos = CanSendVideoNotes = CanSendVoiceNotes = CanSendPolls = CanSendOtherMessages = defaultValue;
-            CanAddWebPagePreviews = CanChangeInfo = CanInviteUsers = CanPinMessages = CanManageTopics = defaultValue;
+            CanAddWebPagePreviews = CanChangeInfo = CanInviteUsers = CanPinMessages = CanEditTag = defaultValue;
+            CanManageTopics = defaultValue;
         }
     }
 
@@ -142,6 +143,7 @@ namespace Telegram.Bot.Types
             CanManageChat = CanDeleteMessages = CanManageVideoChats = CanRestrictMembers = CanPromoteMembers = defaultValue;
             CanChangeInfo = CanInviteUsers = CanPostStories = CanEditStories = CanDeleteStories = defaultValue;
             CanPostMessages = CanEditMessages = CanPinMessages = CanManageTopics = CanManageDirectMessages = defaultValue;
+            CanManageTags = defaultValue;
         }
     }
 
@@ -166,6 +168,10 @@ namespace Telegram.Bot.Types
         /// <summary>Implicit operator ReactionTypeCustomEmoji from long customEmojiId</summary>
         public static implicit operator ReactionType(long customEmojiId) => new ReactionTypeCustomEmoji { CustomEmojiId = customEmojiId.ToString(CultureInfo.InvariantCulture) };
     }
+
+    public partial class ReactionTypeEmoji { /**      <inheritdoc/>**/ public override string ToString() => Emoji; }
+    public partial class ReactionTypeCustomEmoji { /**<inheritdoc/>**/ public override string ToString() => CustomEmojiId; }
+    public partial class ReactionTypePaid { /**       <inheritdoc/>**/ public override string ToString() => "Paid"; }
 
     public partial class LinkPreviewOptions
     {
@@ -214,6 +220,7 @@ namespace Telegram.Bot.Types
         /// <param name="userId">Unique identifier of the target user</param>
         public static BotCommandScopeChatMember ChatMember(ChatId chatId, long userId) => new() { ChatId = chatId, UserId = userId };
     }
+
 
     namespace Payments
     {
@@ -445,17 +452,52 @@ namespace Telegram.Bot.Types
                     CallbackData = callbackDataOrUrl;
             }
 
-            /// <summary>Performs an implicit conversion from <see cref="string"/> to <see cref="InlineKeyboardButton"/></summary>
+            /// <summary>Generate an inline keyboard button of the given type</summary>
+            /// <param name="text">Button's text</param>
+            /// <param name="type">Type of the button to be created. (there are other types with specific constructors)</param>
+            /// <param name="value">Url, Data or Text to be associated with the button. Meaning depends on the button <paramref name="type"/></param>
+            [SetsRequiredMembers]
+            public InlineKeyboardButton(string text, InlineButtonType type, string value = "")
+            {
+                Text = text;
+                switch (type)
+                {
+                    case InlineButtonType.Url: Url = value; break;
+                    case InlineButtonType.Callback: CallbackData = value; break;
+                    case InlineButtonType.WebApp: WebApp = value; break;
+                    case InlineButtonType.LoginUrl: LoginUrl = new LoginUrl { Url = value }; break;
+                    case InlineButtonType.SwitchInlineQuery: SwitchInlineQuery = value; break;
+                    case InlineButtonType.SwitchInlineQueryCurrentChat: SwitchInlineQueryCurrentChat = value; break;
+                    case InlineButtonType.CopyText: CopyText = value; break;
+                    case InlineButtonType.Game: CallbackGame = new(); break;
+                    case InlineButtonType.Pay: Pay = true; break;
+                    default: throw new NotSupportedException("Unrecognized type of inline button");
+                }
+            }
+
+            /// <summary>Performs an implicit conversion from <paramref name="textAndCallbackDataOrUrl"/> to <see cref="InlineKeyboardButton"/></summary>
             /// <param name="textAndCallbackDataOrUrl">Text serving as the label of the button, as well as the URL to be opened or the callback data to be sent</param>
             /// <returns>The result of the conversion.</returns>
             public static implicit operator InlineKeyboardButton(string textAndCallbackDataOrUrl)
                 => new(textAndCallbackDataOrUrl, textAndCallbackDataOrUrl);
 
-            /// <summary>Performs an implicit conversion from (<see cref="string"/>, <see cref="string"/>) tuple to <see cref="InlineKeyboardButton"/></summary>
+            /// <summary>Performs an implicit conversion from tuple (text, dataOrUrl) to <see cref="InlineKeyboardButton"/></summary>
             /// <param name="tuple">Tuple with label text, and the URL to be opened or the callback data</param>
             /// <returns>The result of the conversion.</returns>
             public static implicit operator InlineKeyboardButton((string text, string callbackDataOrUrl) tuple)
                 => new(tuple.text, tuple.callbackDataOrUrl);
+
+            /// <summary>Performs an implicit conversion from tuple (text, dataOrUrl, style) to <see cref="InlineKeyboardButton"/></summary>
+            /// <param name="tuple">Tuple with label text, URL to be opened or callback data, button style</param>
+            /// <returns>The result of the conversion.</returns>
+            public static implicit operator InlineKeyboardButton((string text, string callbackDataOrUrl, KeyboardButtonStyle? style) tuple)
+                => new(tuple.text, tuple.callbackDataOrUrl) { Style = tuple.style };
+
+            /// <summary>Performs an implicit conversion from tuple (text, dataOrUrl, style, emoji) to <see cref="InlineKeyboardButton"/></summary>
+            /// <param name="tuple">Tuple with label text, URL to be opened or callback data, button style, icon custom emoji ID</param>
+            /// <returns>The result of the conversion.</returns>
+            public static implicit operator InlineKeyboardButton((string text, string callbackDataOrUrl, KeyboardButtonStyle? style, string iconCustomEmojiId) tuple)
+                => new(tuple.text, tuple.callbackDataOrUrl) { Style = tuple.style, IconCustomEmojiId = tuple.iconCustomEmojiId };
 
             /// <summary>Creates an inline keyboard button that sends <see cref="CallbackQuery"/> to bot when pressed</summary>
             /// <param name="textAndCallbackData">Text and data of the button to be sent in a <see cref="CallbackQuery">callback query</see> to the bot when button is pressed, 1-64 bytes</param>
@@ -465,10 +507,34 @@ namespace Telegram.Bot.Types
 
         public partial class KeyboardButton
         {
+            /// <summary>Generate a keyboard button from text, with one optional request</summary>
+            /// <param name="text">Button's text</param>
+            /// <param name="requestContact">Pass <see langword="true"/> to request the user's phone number, which will be sent as a contact when the button is pressed. Available in private chats only</param>
+            /// <param name="requestLocation">Pass <see langword="true"/> to request the user's current location, which will be sent as a location message when the button is pressed. Available in private chats only</param>
+            [SetsRequiredMembers]
+            public KeyboardButton(string text, bool requestContact = false, bool requestLocation = false)
+            {
+                Text = text;
+                RequestContact = requestContact;
+                RequestLocation = requestLocation;
+            }
+
             /// <summary>Generate a keyboard button from text</summary>
             /// <param name="text">Button's text</param>
             public static implicit operator KeyboardButton(string text)
                 => new(text);
+
+            /// <summary>Performs an implicit conversion from tuple (text, style) to <see cref="KeyboardButton"/></summary>
+            /// <param name="tuple">Tuple with label text, button style</param>
+            /// <returns>The result of the conversion.</returns>
+            public static implicit operator KeyboardButton((string text, KeyboardButtonStyle? style) tuple)
+                => new(tuple.text) { Style = tuple.style };
+
+            /// <summary>Performs an implicit conversion from tuple (text, style, emoji) to <see cref="KeyboardButton"/></summary>
+            /// <param name="tuple">Tuple with label text, button style, icon custom emoji ID</param>
+            /// <returns>The result of the conversion.</returns>
+            public static implicit operator KeyboardButton((string text, KeyboardButtonStyle? style, string iconCustomEmojiId) tuple)
+                => new(tuple.text) { Style = tuple.style, IconCustomEmojiId = tuple.iconCustomEmojiId };
 
             /// <summary>Generate a keyboard button to request users</summary>
             /// <param name="text">Button's text</param>
